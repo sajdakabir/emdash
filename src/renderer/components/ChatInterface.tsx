@@ -1187,8 +1187,7 @@ const ChatInterface: React.FC<Props> = ({
               {planMode.isActive && planMode.planContent && (
                 <PlanOverlay
                   planContent={planMode.planContent}
-                  onAccept={planMode.onAccept}
-                  onDecline={planMode.onDecline}
+                  onAction={planMode.onAction}
                   onDismiss={planMode.onDismiss}
                   taskPath={task.path}
                 />

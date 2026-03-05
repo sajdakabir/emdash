@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { detectPlanModeSignal, extractPlanFileName } from '@/lib/planModeDetector';
 import { makePtyId } from '@shared/ptyId';
 import type { ProviderId } from '@shared/providers/registry';
+import type { PlanAction } from '@/components/PlanOverlay';
 
 interface UsePlanModeOptions {
   taskId: string;
@@ -12,12 +13,42 @@ interface UsePlanModeOptions {
 interface PlanModeResult {
   isActive: boolean;
   planContent: string | null;
-  onAccept: () => void;
-  onDecline: () => void;
+  onAction: (action: PlanAction, editMessage?: string) => void;
   onDismiss: () => void;
 }
 
 const DISMISS_COOLDOWN_MS = 5000;
+
+const ARROW_DOWN = '\x1b[B';
+const ENTER = '\r';
+
+/**
+ * Map a PlanAction to the key sequence Claude Code expects.
+ *
+ * Claude Code's ExitPlanMode prompt is a TUI selection list:
+ *   ❯ Yes, clear context and auto-accept edits (shift+tab)   ← default
+ *     Yes, auto-accept edits
+ *     Yes, manually approve edits
+ *     [text input: tell Claude what to change]
+ *
+ * Navigation: arrow-down to move, Enter to select.
+ */
+function actionToInput(action: PlanAction, editMessage?: string): string {
+  switch (action) {
+    case 'auto-accept-clear':
+      // Default selection — just press Enter
+      return ENTER;
+    case 'auto-accept':
+      // One down + Enter
+      return `${ARROW_DOWN}${ENTER}`;
+    case 'manual-approve':
+      // Two down + Enter
+      return `${ARROW_DOWN}${ARROW_DOWN}${ENTER}`;
+    case 'edit':
+      // Three down to reach text input, then type message + Enter
+      return `${ARROW_DOWN}${ARROW_DOWN}${ARROW_DOWN}${editMessage ?? ''}${ENTER}`;
+  }
+}
 
 export function usePlanMode(opts: UsePlanModeOptions): PlanModeResult {
   const { taskId, providerId, enabled } = opts;
@@ -92,27 +123,30 @@ export function usePlanMode(opts: UsePlanModeOptions): PlanModeResult {
     };
   }, [enabled, taskId, providerId, mainPtyId, readPlan]);
 
-  const onAccept = useCallback(() => {
-    const api = (window as any).electronAPI;
-    try {
-      api?.ptyInput?.({ id: mainPtyId, data: 'y\n' });
-    } catch {}
-    awaitingPlanRef.current = false;
-    targetFileRef.current = null;
-    setIsActive(false);
-    setPlanContent(null);
-  }, [mainPtyId]);
+  const onAction = useCallback(
+    (action: PlanAction, editMessage?: string) => {
+      const api = (window as any).electronAPI;
+      const ptyWrite = (data: string) => api?.ptyInput?.({ id: mainPtyId, data });
 
-  const onDecline = useCallback(() => {
-    const api = (window as any).electronAPI;
-    try {
-      api?.ptyInput?.({ id: mainPtyId, data: 'n\n' });
-    } catch {}
-    awaitingPlanRef.current = false;
-    targetFileRef.current = null;
-    setIsActive(false);
-    setPlanContent(null);
-  }, [mainPtyId]);
+      try {
+        if (action === 'edit' && editMessage) {
+          // Navigate to the text input field first
+          ptyWrite(`${ARROW_DOWN}${ARROW_DOWN}${ARROW_DOWN}`);
+          // Give the TUI time to render the text input, then type + submit
+          setTimeout(() => {
+            ptyWrite(`${editMessage}${ENTER}`);
+          }, 150);
+        } else {
+          ptyWrite(actionToInput(action));
+        }
+      } catch {}
+      awaitingPlanRef.current = false;
+      targetFileRef.current = null;
+      setIsActive(false);
+      setPlanContent(null);
+    },
+    [mainPtyId]
+  );
 
   const onDismiss = useCallback(() => {
     dismissedAtRef.current = Date.now();
@@ -122,8 +156,7 @@ export function usePlanMode(opts: UsePlanModeOptions): PlanModeResult {
   return {
     isActive: enabled && isActive,
     planContent,
-    onAccept,
-    onDecline,
+    onAction,
     onDismiss,
   };
 }
